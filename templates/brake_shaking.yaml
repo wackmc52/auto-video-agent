@@ -1,0 +1,23 @@
+title: "Why Your Car Shakes When Braking"
+type: educational_tip
+tone: friendly
+
+hook: "Your car shakes when you hit the brakes? Here's what's really going on."
+
+key_points:
+  - "Warped brake rotors are the #1 cause"
+  - "This happens from heat buildup over time"
+  - "Resurfacing or replacing rotors fixes it"
+
+call_to_action: "Book your brake inspection today — link in bio."
+
+user_clips:
+  - path: "assets/clips/brake_rotor_closeup.mp4"
+    label: "rotor shot"
+  - path: "assets/clips/brake_job_timelapse.mp4"
+    label: "repair timelapse"
+
+music: upbeat
+duration_target: 45
+include_captions: true
+include_logo: true

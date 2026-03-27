@@ -1,0 +1,19 @@
+title: "Check Engine Light? Do NOT Ignore It"
+type: common_mistake
+tone: urgent
+
+hook: "That check engine light just came on — here's what you need to know right now."
+
+key_points:
+  - "A flashing check engine light means STOP driving — you could damage your engine"
+  - "A steady light means get it checked soon — it could be something simple"
+  - "We scan the code for free and tell you exactly what's going on"
+
+call_to_action: "Check engine light on? Come in for a free scan — no appointment needed."
+
+user_clips: []
+
+music: dramatic
+duration_target: 45
+include_captions: true
+include_logo: true

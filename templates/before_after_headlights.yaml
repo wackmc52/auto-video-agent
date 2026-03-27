@@ -1,0 +1,23 @@
+title: "Headlight Restoration — Before & After"
+type: before_after
+tone: friendly
+
+hook: "Look at this headlight transformation — we do this every week."
+
+key_points:
+  - "These headlights were so foggy you could barely see at night"
+  - "We wet-sanded, polished, and sealed them in under an hour"
+  - "Now they look brand new — and it's a fraction of the cost of replacement"
+
+call_to_action: "Want your headlights looking like new? Book a headlight restoration today!"
+
+user_clips:
+  - path: "assets/clips/headlight_before.mp4"
+    label: "foggy headlight"
+  - path: "assets/clips/headlight_after.mp4"
+    label: "restored headlight"
+
+music: upbeat
+duration_target: 40
+include_captions: true
+include_logo: true

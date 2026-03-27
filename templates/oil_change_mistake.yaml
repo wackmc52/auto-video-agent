@@ -1,0 +1,21 @@
+title: "The #1 Oil Change Mistake That Kills Engines"
+type: common_mistake
+tone: urgent
+
+hook: "This one mistake during an oil change can destroy your engine."
+
+key_points:
+  - "Over-tightening the oil filter causes leaks and cracks"
+  - "Hand-tight plus a quarter turn is all you need"
+  - "Always use the correct filter for your vehicle"
+
+call_to_action: "Don't risk it — let the pros handle it. Book online today."
+
+user_clips:
+  - path: "assets/clips/oil_filter_install.mp4"
+    label: "filter install"
+
+music: dramatic
+duration_target: 40
+include_captions: true
+include_logo: true
