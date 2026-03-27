@@ -17,7 +17,20 @@ Auto Video Agent lets the shop owner go from a video idea to a ready-to-post Ree
 
 ## Workflow
 
-### Step 1: Create a Video Plan (30 seconds)
+### Step 1: Film Short Clips at the Shop (optional, 2 minutes)
+
+The owner pulls out their phone and films quick clips during the workday. These don't need to be polished — raw, authentic footage performs best on social media:
+
+- **5–10 second close-ups** of the repair (brake rotor, oil filter, worn part)
+- **Before/after shots** (foggy headlight → restored headlight)
+- **Timelapse** of a job from start to finish
+- **Quick pan** across the shop floor or a car on the lift
+
+Drop the clips into the `assets/clips/` folder. The tool automatically scales, crops, and sequences them to fit the 9:16 vertical format.
+
+> **Tip:** Filming vertically (portrait) gives the best results. Even a single 5-second clip of real repair work adds massive credibility compared to a plain background.
+
+### Step 2: Create a Video Plan (30 seconds)
 
 The owner fills out a simple YAML template or uses the interactive CLI:
 
@@ -32,8 +45,38 @@ They answer a few questions:
 - **Key points:** worn pads, grinding sounds, longer stopping distance
 - **Call to action:** "Book a free brake check — link in bio"
 - **Music:** upbeat
+- **Clips:** point to the footage they just filmed
 
-### Step 2: Generate the Video (90 seconds)
+Here's what the plan looks like with user clips included:
+
+```yaml
+title: "5 Signs Your Brakes Need Replacing"
+type: educational_tip
+tone: friendly
+hook: "Hear a squealing noise when you brake? Don't ignore it."
+key_points:
+  - "Squealing means your brake pads are worn down to the indicator"
+  - "Grinding sounds mean metal-on-metal — that's rotor damage"
+  - "If your stopping distance has increased, don't wait"
+call_to_action: "Book a free brake check — link in bio."
+
+user_clips:
+  - path: "assets/clips/worn_brake_pad.mp4"
+    label: "worn pad close-up"
+  - path: "assets/clips/new_vs_old_pads.mp4"
+    label: "new vs old comparison"
+  - path: "assets/clips/brake_job_timelapse.mp4"
+    label: "repair timelapse"
+
+music: upbeat
+duration_target: 45
+include_captions: true
+include_logo: true
+```
+
+If no clips are provided, the tool uses a professional gradient background instead — so clips are always optional.
+
+### Step 3: Generate the Video (90 seconds)
 
 ```bash
 python -m src generate templates/brake_signs.yaml
@@ -42,14 +85,16 @@ python -m src generate templates/brake_signs.yaml
 The agent automatically:
 1. **Writes a script** using Claude AI — optimized for short-form video with a scroll-stopping hook, concise body, and clear CTA
 2. **Generates a voiceover** using Edge TTS — natural-sounding, free, no API key needed
-3. **Creates styled captions** — uppercase text on dark pills, synced word-by-word to the audio
-4. **Adds background music** — mood-matched, auto-ducked under the voiceover
-5. **Generates a brand intro** — logo + title card with fade-in
-6. **Generates a CTA outro** — call to action card with "Follow for more"
-7. **Assembles everything** into a 1080x1920 MP4 with FFmpeg
-8. **Validates** the output meets platform specs (file size, duration, resolution)
+3. **Validates and prepares user clips** — probes each clip, scales/crops to 9:16 (1080x1920), and sequences them to fill the voiceover duration
+4. **Creates styled captions** — uppercase text on dark pills, synced word-by-word to the audio
+5. **Adds background music** — mood-matched, auto-ducked under the voiceover
+6. **Generates a brand intro** — logo + title card with fade-in
+7. **Generates a CTA outro** — call to action card with "Follow for more"
+8. **Overlays the logo watermark** — semi-transparent, positioned in the corner
+9. **Assembles everything** into a 1080x1920 MP4 with FFmpeg
+10. **Validates** the output meets platform specs (file size, duration, resolution)
 
-### Step 3: Upload (30 seconds)
+### Step 4: Upload (30 seconds)
 
 The owner opens the `output/` folder, picks up the MP4, and posts it directly to Facebook, Instagram, or TikTok. Done.
 
@@ -61,14 +106,14 @@ Using batch mode, the owner can generate an entire week of content at once:
 python -m src batch templates/ --no-api
 ```
 
-| Day       | Video                                    | Type            |
-|-----------|------------------------------------------|-----------------|
-| Monday    | "Why Your Car Shakes When Braking"       | Educational Tip |
-| Wednesday | "The #1 Oil Change Mistake"              | Common Mistake  |
-| Friday    | "Summer AC Check — $49.99 Special"       | Promo           |
-| Sunday    | "Headlight Restoration Before & After"   | Before/After    |
+| Day       | Video                                    | Type            | User Clips                          |
+|-----------|------------------------------------------|-----------------|-------------------------------------|
+| Monday    | "Why Your Car Shakes When Braking"       | Educational Tip | Rotor close-up, brake job timelapse |
+| Wednesday | "The #1 Oil Change Mistake"              | Common Mistake  | Oil filter install clip             |
+| Friday    | "Summer AC Check — $49.99 Special"       | Promo           | None (gradient background)          |
+| Sunday    | "Headlight Restoration Before & After"   | Before/After    | Before shot, after shot             |
 
-4 videos generated in under 5 minutes. Each one is branded, captioned, and ready to post.
+4 videos generated in under 5 minutes. Each one includes real shop footage (when provided), professional captions, music, and branding — ready to post.
 
 ## Results
 
