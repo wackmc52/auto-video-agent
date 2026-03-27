@@ -5,20 +5,47 @@ Orchestrates the full pipeline: plan → script → voiceover → assembly → e
 Commands: generate, interactive, batch, preview, validate, new-plan
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 
 import click
 import yaml
+from dotenv import load_dotenv
 
-from .planner import load_plan, print_plan_summary, PlanError, VideoPlan, Clip
+from .planner import load_plan, print_plan_summary, PlanError, VideoPlan, Clip, calculate_timing
 from .scriptwriter import generate_script, print_script, Script, ScriptLine
-from .voiceover import generate_voiceover, load_voice_config, print_voiceover_summary
-from .captions import generate_captions, print_captions_summary
+from .voiceover import generate_voiceover, load_voice_config
+from .captions import generate_captions
 from .assets import prepare_clips
 from .compositor import compose_video, load_compositor_config
 from .exporter import generate_output_path, validate_output, print_export_summary
+from .utils import load_config, find_project_root
+
+load_dotenv(override=True)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+def _setup_logging(verbose: bool = False, quiet: bool = False) -> None:
+    """Configure logging based on verbosity flags."""
+    if verbose:
+        level = logging.DEBUG
+    elif quiet:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
+
+    logging.basicConfig(
+        level=level,
+        format="%(message)s",
+        handlers=[logging.StreamHandler()],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -31,61 +58,96 @@ def _resolve_project_root(plan_path: str, project_root: str = None) -> str:
     return str(Path(plan_path).parent.parent)
 
 
-def _run_pipeline(plan: VideoPlan, project_root: str, skip_script_api: bool = False):
+def _check_api_key() -> None:
+    """Check for ANTHROPIC_API_KEY and exit with a clear message if missing."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        click.echo(
+            "\n  Error: No ANTHROPIC_API_KEY found.\n"
+            "  Set it in .env or run 'preview' mode instead.\n"
+            "\n  To set up:\n"
+            "    cp .env.example .env\n"
+            "    # Edit .env and add your API key\n",
+            err=True,
+        )
+        sys.exit(1)
+
+
+def _run_pipeline(
+    plan: VideoPlan,
+    project_root: str,
+    config: dict,
+    skip_script_api: bool = False,
+    output_path: str = None,
+    dry_run: bool = False,
+):
     """Run the full generation pipeline for a single plan."""
 
     # Step 1: Script
-    click.echo("--- Generating Script ---")
+    logger.info("--- Generating Script ---")
     if skip_script_api:
         script = _script_from_plan(plan)
-        click.echo("  (preview mode — script built from plan text, no API call)")
+        logger.info("  (preview mode — script built from plan text, no API call)")
     else:
         try:
-            script = generate_script(plan)
+            ai_config = config.get("ai", {})
+            model = ai_config.get("model", "")
+            script = generate_script(plan, model=model)
         except Exception as e:
-            click.echo(f"\n  Error generating script: {e}", err=True)
+            logger.error(f"Error generating script: {e}")
             return None
     print_script(script)
 
     # Step 2: Voiceover
-    click.echo("--- Generating Voiceover ---")
+    logger.info("--- Generating Voiceover ---")
     try:
-        os.makedirs("output", exist_ok=True)
+        output_dir = config.get("output", {}).get("directory", "output")
+        os.makedirs(output_dir, exist_ok=True)
         slug = plan.title.lower().replace(" ", "_")[:30]
-        audio_path = f"output/{slug}_voiceover.mp3"
+        audio_path = os.path.join(output_dir, f"{slug}_voiceover.mp3")
 
-        voice, rate = load_voice_config(
-            os.path.join(project_root, "config.yaml")
-        )
+        voice, rate = load_voice_config(config)
         voiceover = generate_voiceover(script, audio_path, voice=voice, rate=rate)
     except Exception as e:
-        click.echo(f"\n  Error generating voiceover: {e}", err=True)
+        logger.error(f"Error generating voiceover: {e}")
         return None
-    print_voiceover_summary(voiceover)
 
     # Step 3: Captions
     caption_track = None
     if plan.include_captions:
-        click.echo("--- Generating Captions ---")
+        logger.info("--- Generating Captions ---")
         caption_track = generate_captions(voiceover.word_timings, words_per_frame=3)
-        print_captions_summary(caption_track)
+
+    if dry_run:
+        logger.info("\n--- Dry Run Complete ---")
+        logger.info(f"  Script: {len(script.lines)} lines, ~{script.total_duration}s")
+        logger.info(f"  Voiceover: {voiceover.duration}s, {voiceover.file_size_kb}KB")
+        if caption_track:
+            logger.info(f"  Captions: {caption_track.count} frames")
+        logger.info(f"  Would assemble video with music={plan.music}")
+        logger.info("  Skipping FFmpeg assembly (--dry-run)\n")
+        # Clean up voiceover file created during dry run
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+        return "dry-run"
 
     # Step 4: Assets
-    click.echo("--- Preparing Assets ---")
+    logger.info("--- Preparing Assets ---")
     clips = prepare_clips(
         [{"path": c.path, "label": c.label} for c in plan.user_clips],
         project_root=project_root,
     )
     if clips:
-        click.echo(f"  {len(clips)} clip(s) validated and ready")
+        logger.info(f"  {len(clips)} clip(s) validated and ready")
     else:
-        click.echo("  No user clips found — using gradient background")
+        logger.info("  No user clips found — using gradient background")
 
     # Step 5: Compose
-    click.echo("\n--- Assembling Video ---")
-    config_path = os.path.join(project_root, "config.yaml")
-    comp_config = load_compositor_config(config_path)
-    output_path = generate_output_path(plan.title, output_dir="output")
+    logger.info("\n--- Assembling Video ---")
+    comp_config = load_compositor_config(config)
+
+    if not output_path:
+        output_dir = config.get("output", {}).get("directory", "output")
+        output_path = generate_output_path(plan.title, output_dir=output_dir)
 
     try:
         compose_video(
@@ -99,24 +161,20 @@ def _run_pipeline(plan: VideoPlan, project_root: str, skip_script_api: bool = Fa
             cta_text=plan.call_to_action,
         )
     except Exception as e:
-        click.echo(f"\n  Error assembling video: {e}", err=True)
+        logger.error(f"Error assembling video: {e}")
         return None
 
     # Step 6: Validate
-    click.echo("--- Exporting ---")
+    logger.info("--- Exporting ---")
     result = validate_output(output_path)
     print_export_summary(result)
     return output_path
 
 
 def _script_from_plan(plan: VideoPlan) -> Script:
-    """Build a simple script directly from plan fields (no API call).
-
-    Used for preview mode and when the API key is not configured.
-    """
+    """Build a simple script directly from plan fields (no API call)."""
     lines = []
 
-    # Hook
     lines.append(ScriptLine(
         text=plan.hook,
         duration=plan.timing.hook_seconds if plan.timing else 5.0,
@@ -124,7 +182,6 @@ def _script_from_plan(plan: VideoPlan) -> Script:
         caption=plan.hook[:30],
     ))
 
-    # Body — one line per key point
     body_time = plan.timing.body_seconds if plan.timing else 25.0
     per_point = body_time / max(len(plan.key_points), 1)
     for point in plan.key_points:
@@ -135,7 +192,6 @@ def _script_from_plan(plan: VideoPlan) -> Script:
             caption=point[:30],
         ))
 
-    # CTA
     lines.append(ScriptLine(
         text=plan.call_to_action,
         duration=plan.timing.cta_seconds if plan.timing else 5.0,
@@ -152,32 +208,45 @@ def _script_from_plan(plan: VideoPlan) -> Script:
 # ---------------------------------------------------------------------------
 
 @click.group()
-@click.version_option(version="0.2.0")
-def cli():
+@click.version_option(version="0.3.0")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
+@click.option("--quiet", "-q", is_flag=True, help="Only show warnings and errors")
+@click.pass_context
+def cli(ctx, verbose, quiet):
     """Auto Video Agent — AI-powered short video creator for auto repair marketing."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    ctx.obj["quiet"] = quiet
+    _setup_logging(verbose=verbose, quiet=quiet)
 
 
 @cli.command()
 @click.argument("plan_path", type=click.Path(exists=True))
 @click.option("--project-root", default=None, help="Project root for resolving clip paths")
-def generate(plan_path, project_root):
+@click.option("--output", "-o", default=None, help="Output file path (default: auto-generated)")
+@click.option("--dry-run", is_flag=True, help="Run script + voiceover but skip FFmpeg assembly")
+@click.pass_context
+def generate(ctx, plan_path, project_root, output, dry_run):
     """Generate a video from a YAML plan file.
 
     Uses Claude API for script generation, Edge TTS for voiceover,
     and FFmpeg for video assembly with styled captions, music, and branding.
     """
-    project_root = _resolve_project_root(plan_path, project_root)
+    _check_api_key()
 
-    click.echo("\n--- Loading Plan ---")
+    project_root = _resolve_project_root(plan_path, project_root)
+    config = load_config(os.path.join(project_root, "config.yaml"))
+
+    logger.info("\n--- Loading Plan ---")
     try:
         plan = load_plan(plan_path, project_root=project_root)
     except PlanError as e:
-        click.echo(f"\n  Error: {e}", err=True)
+        logger.error(f"Error: {e}")
         sys.exit(1)
 
     print_plan_summary(plan)
-    result = _run_pipeline(plan, project_root, skip_script_api=False)
+    result = _run_pipeline(plan, project_root, config, skip_script_api=False,
+                           output_path=output, dry_run=dry_run)
     if not result:
         sys.exit(1)
 
@@ -185,23 +254,27 @@ def generate(plan_path, project_root):
 @cli.command()
 @click.argument("plan_path", type=click.Path(exists=True))
 @click.option("--project-root", default=None, help="Project root for resolving clip paths")
-def preview(plan_path, project_root):
+@click.option("--output", "-o", default=None, help="Output file path (default: auto-generated)")
+@click.option("--dry-run", is_flag=True, help="Run voiceover but skip FFmpeg assembly")
+@click.pass_context
+def preview(ctx, plan_path, project_root, output, dry_run):
     """Quick preview render — skips Claude API, builds script from plan text.
 
     Great for testing your plan before using API credits.
-    Uses plan hook + key points + CTA directly as the script.
     """
     project_root = _resolve_project_root(plan_path, project_root)
+    config = load_config(os.path.join(project_root, "config.yaml"))
 
-    click.echo("\n--- Loading Plan (Preview Mode) ---")
+    logger.info("\n--- Loading Plan (Preview Mode) ---")
     try:
         plan = load_plan(plan_path, project_root=project_root)
     except PlanError as e:
-        click.echo(f"\n  Error: {e}", err=True)
+        logger.error(f"Error: {e}")
         sys.exit(1)
 
     print_plan_summary(plan)
-    result = _run_pipeline(plan, project_root, skip_script_api=True)
+    result = _run_pipeline(plan, project_root, config, skip_script_api=True,
+                           output_path=output, dry_run=dry_run)
     if not result:
         sys.exit(1)
 
@@ -210,16 +283,20 @@ def preview(plan_path, project_root):
 @click.argument("paths", nargs=-1, type=click.Path(exists=True))
 @click.option("--project-root", default=None, help="Project root for resolving clip paths")
 @click.option("--no-api", is_flag=True, help="Skip Claude API — use plan text as script")
-def batch(paths, project_root, no_api):
+@click.pass_context
+def batch(ctx, paths, project_root, no_api):
     """Process multiple video plans at once.
 
     Pass individual YAML files or a directory containing YAML plans.
 
     Examples:
-        python -m src batch templates/plan1.yaml templates/plan2.yaml
-        python -m src batch templates/
-        python -m src batch templates/ --no-api
+        auto-video-agent batch templates/plan1.yaml templates/plan2.yaml
+        auto-video-agent batch templates/
+        auto-video-agent batch templates/ --no-api
     """
+    if not no_api:
+        _check_api_key()
+
     # Expand directories into YAML files
     plan_files = []
     for p in paths:
@@ -240,6 +317,7 @@ def batch(paths, project_root, no_api):
     for i, plan_file in enumerate(plan_files, 1):
         plan_path = str(plan_file)
         root = _resolve_project_root(plan_path, project_root)
+        config = load_config(os.path.join(root, "config.yaml"))
 
         click.echo(f"\n{'='*50}")
         click.echo(f"  [{i}/{len(plan_files)}] {plan_file.name}")
@@ -253,7 +331,7 @@ def batch(paths, project_root, no_api):
             continue
 
         print_plan_summary(plan)
-        output = _run_pipeline(plan, root, skip_script_api=no_api)
+        output = _run_pipeline(plan, root, config, skip_script_api=no_api)
 
         if output:
             results.append((plan_file.name, "OK", output))
@@ -273,7 +351,8 @@ def batch(paths, project_root, no_api):
 
 
 @cli.command()
-def interactive():
+@click.pass_context
+def interactive(ctx):
     """Build a video plan interactively via guided prompts, then generate."""
     click.echo("\n--- Interactive Video Builder ---\n")
 
@@ -333,9 +412,7 @@ def interactive():
         user_clips=[Clip(path=c["path"], label=c["label"]) for c in clips],
     )
 
-    # Calculate timing
-    from .planner import _calculate_timing
-    plan.timing = _calculate_timing(plan)
+    plan.timing = calculate_timing(plan)
 
     click.echo("\n--- Plan Summary ---")
     print_plan_summary(plan)
@@ -348,10 +425,13 @@ def interactive():
 
     # Option to use API or preview
     use_api = click.confirm("\n  Use Claude API for script? (No = use plan text directly)", default=True)
+    if use_api:
+        _check_api_key()
 
     click.echo()
-    project_root = str(Path.cwd())
-    _run_pipeline(plan, project_root, skip_script_api=not use_api)
+    project_root = find_project_root()
+    config = load_config(os.path.join(project_root, "config.yaml"))
+    _run_pipeline(plan, project_root, config, skip_script_api=not use_api)
 
 
 @cli.command("new-plan")
@@ -364,8 +444,8 @@ def new_plan(name, video_type, output_dir):
     """Create a new video plan template YAML file.
 
     Examples:
-        python -m src new-plan "Tire Rotation Tips"
-        python -m src new-plan "Oil Change Special" --type promo
+        auto-video-agent new-plan "Tire Rotation Tips"
+        auto-video-agent new-plan "Oil Change Special" --type promo
     """
     templates = {
         "educational_tip": {
@@ -443,8 +523,8 @@ def new_plan(name, video_type, output_dir):
     click.echo(f"\n  Created template: {file_path}")
     click.echo(f"  Type: {video_type}")
     click.echo(f"  Edit the file, fill in your content, then run:")
-    click.echo(f"    python -m src generate {file_path}")
-    click.echo(f"    python -m src preview {file_path}  (no API needed)\n")
+    click.echo(f"    auto-video-agent generate {file_path}")
+    click.echo(f"    auto-video-agent preview {file_path}  (no API needed)\n")
 
 
 @cli.command()
@@ -454,9 +534,9 @@ def validate(plan_path):
     try:
         plan = load_plan(plan_path)
         print_plan_summary(plan)
-        click.echo("  Plan is valid!\n")
+        logger.info("  Plan is valid!\n")
     except PlanError as e:
-        click.echo(f"\n  Validation failed: {e}", err=True)
+        logger.error(f"Validation failed: {e}")
         sys.exit(1)
 
 

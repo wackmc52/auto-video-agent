@@ -6,11 +6,13 @@ and generates a clean output filename.
 """
 
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 from datetime import date
-from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,15 +121,14 @@ def validate_output(video_path: str) -> ExportResult:
 
 
 def print_export_summary(result: ExportResult) -> None:
-    """Print export validation results."""
+    """Log export validation results."""
     status = "READY" if result.valid else "ISSUES FOUND"
-    print(f"\n  Export: {status}")
-    print(f"   {result.path}")
-    print(f"   {result.file_size_mb}MB | {result.duration}s | {result.width}x{result.height}")
+    logger.info(f"Export: {status}")
+    logger.info(f"  {result.path}")
+    logger.info(f"  {result.file_size_mb}MB | {result.duration}s | {result.width}x{result.height}")
 
     if result.warnings:
         for w in result.warnings:
-            print(f"   Warning: {w}")
+            logger.warning(f"  {w}")
     else:
-        print(f"   All checks passed — ready to upload!")
-    print()
+        logger.info(f"  All checks passed — ready to upload!")

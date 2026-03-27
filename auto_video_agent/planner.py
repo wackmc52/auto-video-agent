@@ -5,6 +5,7 @@ Reads a user-supplied YAML plan, validates required fields,
 resolves file paths for clips, and calculates rough timing per section.
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Optional
 
 import yaml
 
+logger = logging.getLogger(__name__)
 
 VALID_TYPES = {"educational_tip", "before_after", "common_mistake", "promo"}
 VALID_TONES = {"friendly", "authoritative", "urgent", "humorous"}
@@ -71,7 +73,7 @@ def load_plan(yaml_path: str, project_root: Optional[str] = None) -> VideoPlan:
     if project_root:
         _resolve_clip_paths(plan, project_root)
 
-    plan.timing = _calculate_timing(plan)
+    plan.timing = calculate_timing(plan)
 
     return plan
 
@@ -145,7 +147,7 @@ def _resolve_clip_paths(plan: VideoPlan, project_root: str) -> None:
         clip.path = str(resolved)
 
 
-def _calculate_timing(plan: VideoPlan) -> TimingBreakdown:
+def calculate_timing(plan: VideoPlan) -> TimingBreakdown:
     """Calculate rough timing breakdown for hook, body, and CTA."""
     total = plan.duration_target
 
@@ -167,20 +169,19 @@ def _calculate_timing(plan: VideoPlan) -> TimingBreakdown:
 
 
 def print_plan_summary(plan: VideoPlan) -> None:
-    """Print a human-readable summary of the video plan."""
-    print(f"\n  Loading plan: \"{plan.title}\"")
-    print(f"   Type: {plan.type} | Tone: {plan.tone} | Target: {plan.duration_target}s")
+    """Log a human-readable summary of the video plan."""
+    logger.info(f'Loading plan: "{plan.title}"')
+    logger.info(f"  Type: {plan.type} | Tone: {plan.tone} | Target: {plan.duration_target}s")
 
     if plan.timing:
         t = plan.timing
-        print(f"   Timing: Hook {t.hook_seconds}s | Body {t.body_seconds}s | CTA {t.cta_seconds}s")
+        logger.info(f"  Timing: Hook {t.hook_seconds}s | Body {t.body_seconds}s | CTA {t.cta_seconds}s")
 
     if plan.user_clips:
-        print(f"   Clips: {len(plan.user_clips)} supplied")
+        logger.info(f"  Clips: {len(plan.user_clips)} supplied")
         for clip in plan.user_clips:
             exists = " (found)" if os.path.exists(clip.path) else " (missing)"
-            print(f"     - {clip.label or clip.path}{exists}")
+            logger.info(f"    - {clip.label or clip.path}{exists}")
 
-    print(f"   Captions: {'yes' if plan.include_captions else 'no'} | Logo: {'yes' if plan.include_logo else 'no'}")
-    print(f"   Music: {plan.music}")
-    print()
+    logger.info(f"  Captions: {'yes' if plan.include_captions else 'no'} | Logo: {'yes' if plan.include_logo else 'no'}")
+    logger.info(f"  Music: {plan.music}")

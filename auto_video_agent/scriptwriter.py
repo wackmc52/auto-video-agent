@@ -6,7 +6,9 @@ hook, body, and CTA sections, including per-line timing and caption text.
 """
 
 import json
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 import anthropic
@@ -15,6 +17,12 @@ from dotenv import load_dotenv
 from .planner import VideoPlan
 
 load_dotenv(override=True)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
+MAX_RETRIES = 3
+RETRY_BACKOFF = [1, 2, 4]  # seconds
 
 
 @dataclass
@@ -76,21 +84,40 @@ Rules for the JSON:
 """
 
 
-def generate_script(plan: VideoPlan) -> Script:
-    """Generate a timed script from a video plan using Claude API."""
-    client = anthropic.Anthropic()
+def generate_script(plan: VideoPlan, model: str = "") -> Script:
+    """Generate a timed script from a video plan using Claude API.
 
+    Args:
+        plan: The video plan to generate a script for.
+        model: Claude model to use. Falls back to DEFAULT_MODEL.
+    """
+    model = model or DEFAULT_MODEL
+    client = anthropic.Anthropic()
     user_prompt = _build_prompt(plan)
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            logger.debug(f"API call attempt {attempt + 1}/{MAX_RETRIES} using {model}")
+            message = client.messages.create(
+                model=model,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            response_text = message.content[0].text
+            return _parse_response(response_text)
 
-    response_text = message.content[0].text
-    return _parse_response(response_text)
+        except (anthropic.APIError, anthropic.APIConnectionError) as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                wait = RETRY_BACKOFF[attempt]
+                logger.warning(f"API error (attempt {attempt + 1}): {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                logger.error(f"API failed after {MAX_RETRIES} attempts: {e}")
+
+    raise last_error
 
 
 def _build_prompt(plan: VideoPlan) -> str:
@@ -152,14 +179,13 @@ def _parse_response(response_text: str) -> Script:
 
 
 def print_script(script: Script) -> None:
-    """Print a formatted script for review."""
-    print(f"\n  Script ready ({len(script.lines)} lines, ~{script.total_duration} seconds)\n")
+    """Log a formatted script for review."""
+    logger.info(f"Script ready ({len(script.lines)} lines, ~{script.total_duration} seconds)")
 
     current_section = ""
     for line in script.lines:
         if line.section != current_section:
             current_section = line.section
-            print(f"  [{current_section.upper()}]")
-        print(f"    ({line.duration}s) {line.text}")
-        print(f"           Caption: \"{line.caption}\"")
-    print()
+            logger.info(f"  [{current_section.upper()}]")
+        logger.info(f"    ({line.duration}s) {line.text}")
+        logger.info(f"           Caption: \"{line.caption}\"")

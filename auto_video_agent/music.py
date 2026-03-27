@@ -5,11 +5,12 @@ Generates simple royalty-free background tracks using FFmpeg's audio
 synthesis, or loads user-supplied tracks from assets/music/.
 """
 
+import logging
 import os
 import subprocess
-from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
 # Mood-based synthesis parameters (frequency, tempo feel)
 MOOD_PRESETS = {
@@ -62,12 +63,14 @@ def get_music_track(
     # Check for user-supplied tracks
     user_track = _find_user_track(mood, music_dir)
     if user_track:
+        logger.info(f"Using user-supplied music track: {user_track}")
         return user_track
 
     if mood == "none":
         return None
 
     # Generate a synthesized track
+    logger.debug(f"Generating synthesized {mood} track ({duration}s)")
     return generate_ambient_track(mood, duration, output_dir)
 
 
@@ -94,36 +97,22 @@ def generate_ambient_track(
     duration: float,
     output_dir: str,
 ) -> str:
-    """Generate a simple ambient background track using FFmpeg synthesis.
-
-    Creates a layered pad sound with a low drone and gentle melodic tones.
-    """
+    """Generate a simple ambient background track using FFmpeg synthesis."""
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"_bgm_{mood}.mp3")
 
     preset = MOOD_PRESETS.get(mood, MOOD_PRESETS["chill"])
     base_freq = preset["base_freq"]
 
-    # Build a multi-layered ambient pad using FFmpeg's sine generator
-    # Layer 1: Low bass drone
-    # Layer 2: Mid pad chord
-    # Layer 3: Light melodic sequence
-
-    # Create a warm pad by mixing detuned sines
-    pad_freq1 = base_freq * 2  # octave up
-    pad_freq2 = base_freq * 3  # fifth above that
-    pad_freq3 = base_freq * 4  # two octaves up
+    pad_freq1 = base_freq * 2
+    pad_freq2 = base_freq * 3
+    pad_freq3 = base_freq * 4
 
     filter_parts = [
-        # Bass drone with slow volume swell
         f"sine=f={base_freq}:d={duration},volume=0.15,afade=t=in:d=2,afade=t=out:st={duration-2}:d=2[bass]",
-        # Pad layer 1
         f"sine=f={pad_freq1}:d={duration},volume=0.08,afade=t=in:d=3,afade=t=out:st={duration-2}:d=2[pad1]",
-        # Pad layer 2 (slightly detuned for warmth)
         f"sine=f={pad_freq2 * 1.003}:d={duration},volume=0.06,afade=t=in:d=3,afade=t=out:st={duration-2}:d=2[pad2]",
-        # High shimmer
         f"sine=f={pad_freq3}:d={duration},volume=0.04,afade=t=in:d=4,afade=t=out:st={duration-3}:d=3[shimmer]",
-        # Mix all layers
         "[bass][pad1]amix=inputs=2[mix1]",
         "[mix1][pad2]amix=inputs=2[mix2]",
         "[mix2][shimmer]amix=inputs=2,volume=2.0[out]",
@@ -134,7 +123,7 @@ def generate_ambient_track(
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi",
-        "-i", f"anullsrc=r=44100:cl=stereo",
+        "-i", "anullsrc=r=44100:cl=stereo",
         "-filter_complex", filter_complex,
         "-map", "[out]",
         "-t", str(duration),
@@ -145,7 +134,7 @@ def generate_ambient_track(
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
     if result.returncode != 0:
-        # Fallback: simple sine drone
+        logger.warning(f"Ambient track generation failed, falling back to simple drone")
         return _generate_simple_drone(base_freq, duration, output_path)
 
     return output_path
@@ -153,7 +142,7 @@ def generate_ambient_track(
 
 def _generate_simple_drone(freq: float, duration: float, output_path: str) -> str:
     """Fallback: generate a simple sine drone."""
-    subprocess.run(
+    result = subprocess.run(
         [
             "ffmpeg", "-y",
             "-f", "lavfi",
@@ -162,6 +151,8 @@ def _generate_simple_drone(freq: float, duration: float, output_path: str) -> st
             "-c:a", "libmp3lame", "-b:a", "128k",
             output_path,
         ],
-        capture_output=True, timeout=15,
+        capture_output=True, text=True, timeout=15,
     )
+    if result.returncode != 0:
+        logger.error(f"Even simple drone failed: {result.stderr[-200:]}")
     return output_path

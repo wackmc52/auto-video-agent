@@ -5,12 +5,16 @@ Generates placeholder logos, brand intro sequences (logo reveal + title),
 and outro cards (CTA screen) as short video segments.
 """
 
+import logging
 import os
 import subprocess
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
+from .utils import hex_to_rgb, load_font
+
+logger = logging.getLogger(__name__)
 
 TARGET_WIDTH = 1080
 TARGET_HEIGHT = 1920
@@ -30,7 +34,7 @@ def generate_placeholder_logo(
     draw = ImageDraw.Draw(img)
 
     # Draw circle
-    bg_rgb = _hex_to_rgb(bg_color)
+    bg_rgb = hex_to_rgb(bg_color)
     margin = 10
     draw.ellipse(
         [margin, margin, size - margin, size - margin],
@@ -38,8 +42,8 @@ def generate_placeholder_logo(
     )
 
     # Draw text
-    font = _load_bold_font(size // 4)
-    text_rgb = _hex_to_rgb(text_color)
+    font = load_font(size=size // 4, bold=True)
+    text_rgb = hex_to_rgb(text_color)
     bbox = draw.textbbox((0, 0), text, font=font)
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
@@ -64,26 +68,14 @@ def generate_intro(
     height: int = TARGET_HEIGHT,
     fps: int = 30,
 ) -> str:
-    """Generate a brand intro video segment.
-
-    Shows the logo centered with the video title below it,
-    on a gradient background with a fade-in effect.
-    """
+    """Generate a brand intro video segment."""
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    # Create intro frame with Pillow
     frame = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(frame)
 
     # Gradient background
-    top_rgb = _hex_to_rgb(bg_color_top)
-    bot_rgb = _hex_to_rgb(bg_color_bottom)
-    for y in range(height):
-        ratio = y / height
-        r = int(top_rgb[0] + (bot_rgb[0] - top_rgb[0]) * ratio)
-        g = int(top_rgb[1] + (bot_rgb[1] - top_rgb[1]) * ratio)
-        b = int(top_rgb[2] + (bot_rgb[2] - top_rgb[2]) * ratio)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+    _draw_gradient(draw, width, height, bg_color_top, bg_color_bottom)
 
     # Logo
     if logo_path and os.path.exists(logo_path):
@@ -95,8 +87,7 @@ def generate_intro(
         frame.paste(logo, (logo_x, logo_y), logo)
 
     # Title text
-    title_font = _load_bold_font(48)
-    accent_rgb = _hex_to_rgb(accent_color)
+    title_font = load_font(size=48, bold=True)
 
     # Word wrap title if too long
     wrapped = _wrap_text(title, title_font, draw, width - 120)
@@ -113,6 +104,7 @@ def generate_intro(
         title_y += bbox[3] - bbox[1] + 10
 
     # Accent line under title
+    accent_rgb = hex_to_rgb(accent_color)
     line_w = 200
     line_y = title_y + 20
     draw.rectangle(
@@ -124,7 +116,7 @@ def generate_intro(
     frame_path = output_path.replace(".mp4", "_frame.png")
     frame.save(frame_path, "PNG")
 
-    subprocess.run(
+    result = subprocess.run(
         [
             "ffmpeg", "-y",
             "-loop", "1", "-i", frame_path,
@@ -134,10 +126,13 @@ def generate_intro(
             "-pix_fmt", "yuv420p", "-r", str(fps),
             output_path,
         ],
-        capture_output=True, timeout=15,
+        capture_output=True, text=True, timeout=15,
     )
+    if result.returncode != 0:
+        logger.error(f"Intro generation failed: {result.stderr[-300:]}")
 
-    os.remove(frame_path)
+    if os.path.exists(frame_path):
+        os.remove(frame_path)
     return output_path
 
 
@@ -153,27 +148,16 @@ def generate_outro(
     height: int = TARGET_HEIGHT,
     fps: int = 30,
 ) -> str:
-    """Generate a brand outro video segment.
-
-    Shows a CTA card with the call to action text,
-    logo, and a 'follow for more' prompt.
-    """
+    """Generate a brand outro video segment."""
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
     frame = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(frame)
 
     # Gradient background
-    top_rgb = _hex_to_rgb(bg_color_top)
-    bot_rgb = _hex_to_rgb(bg_color_bottom)
-    for y in range(height):
-        ratio = y / height
-        r = int(top_rgb[0] + (bot_rgb[0] - top_rgb[0]) * ratio)
-        g = int(top_rgb[1] + (bot_rgb[1] - top_rgb[1]) * ratio)
-        b = int(top_rgb[2] + (bot_rgb[2] - top_rgb[2]) * ratio)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+    _draw_gradient(draw, width, height, bg_color_top, bg_color_bottom)
 
-    accent_rgb = _hex_to_rgb(accent_color)
+    accent_rgb = hex_to_rgb(accent_color)
 
     # Logo at top
     if logo_path and os.path.exists(logo_path):
@@ -183,7 +167,7 @@ def generate_outro(
         frame.paste(logo, ((width - logo_size) // 2, height // 2 - 250), logo)
 
     # CTA text
-    cta_font = _load_bold_font(44)
+    cta_font = load_font(size=44, bold=True)
     wrapped = _wrap_text(cta_text, cta_font, draw, width - 120)
     y = height // 2 - 40
 
@@ -198,7 +182,7 @@ def generate_outro(
         y += bbox[3] - bbox[1] + 12
 
     # "Follow for more" text
-    follow_font = _load_bold_font(32)
+    follow_font = load_font(size=32, bold=True)
     follow_text = "FOLLOW FOR MORE"
     bbox = draw.textbbox((0, 0), follow_text, font=follow_font)
     fw = bbox[2] - bbox[0]
@@ -223,7 +207,7 @@ def generate_outro(
     frame_path = output_path.replace(".mp4", "_frame.png")
     frame.save(frame_path, "PNG")
 
-    subprocess.run(
+    result = subprocess.run(
         [
             "ffmpeg", "-y",
             "-loop", "1", "-i", frame_path,
@@ -233,11 +217,27 @@ def generate_outro(
             "-pix_fmt", "yuv420p", "-r", str(fps),
             output_path,
         ],
-        capture_output=True, timeout=15,
+        capture_output=True, text=True, timeout=15,
     )
+    if result.returncode != 0:
+        logger.error(f"Outro generation failed: {result.stderr[-300:]}")
 
-    os.remove(frame_path)
+    if os.path.exists(frame_path):
+        os.remove(frame_path)
     return output_path
+
+
+def _draw_gradient(draw: ImageDraw.ImageDraw, width: int, height: int,
+                   color_top: str, color_bottom: str) -> None:
+    """Draw a vertical gradient on the given ImageDraw."""
+    top_rgb = hex_to_rgb(color_top)
+    bot_rgb = hex_to_rgb(color_bottom)
+    for y in range(height):
+        ratio = y / height
+        r = int(top_rgb[0] + (bot_rgb[0] - top_rgb[0]) * ratio)
+        g = int(top_rgb[1] + (bot_rgb[1] - top_rgb[1]) * ratio)
+        b = int(top_rgb[2] + (bot_rgb[2] - top_rgb[2]) * ratio)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
 
 
 def _wrap_text(text: str, font, draw, max_width: int) -> list[str]:
@@ -260,25 +260,3 @@ def _wrap_text(text: str, font, draw, max_width: int) -> list[str]:
         lines.append(current)
 
     return lines
-
-
-def _load_bold_font(size: int) -> ImageFont.FreeTypeFont:
-    """Load a bold font."""
-    for path in [
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ]:
-        try:
-            return ImageFont.truetype(path, size)
-        except (OSError, IOError):
-            continue
-    return ImageFont.load_default()
-
-
-def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    hex_color = hex_color.lstrip("#")
-    return (
-        int(hex_color[0:2], 16),
-        int(hex_color[2:4], 16),
-        int(hex_color[4:6], 16),
-    )

@@ -8,8 +8,8 @@ AI-powered CLI tool that generates short-form marketing videos (30–60s) for au
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install (editable mode for development)
+pip install -e .
 
 # Install FFmpeg (Ubuntu/WSL)
 sudo apt install ffmpeg
@@ -18,10 +18,13 @@ sudo apt install ffmpeg
 cp .env.example .env
 
 # Preview a video (no API key needed)
-python -m src preview templates/brake_shaking.yaml
+auto-video-agent preview templates/brake_shaking.yaml
 
 # Full AI-powered generation
-python -m src generate templates/brake_shaking.yaml
+auto-video-agent generate templates/brake_shaking.yaml
+
+# Alternative: run as a Python module
+python -m auto_video_agent preview templates/brake_shaking.yaml
 ```
 
 ## Commands
@@ -34,6 +37,17 @@ python -m src generate templates/brake_shaking.yaml
 | `interactive` | Guided prompts to build a plan and generate |
 | `new-plan "Title"` | Scaffold a new YAML template |
 | `validate <plan.yaml>` | Check a plan file without generating |
+
+## CLI Flags
+
+| Flag | Commands | Description |
+|---|---|---|
+| `--verbose` / `-v` | All | Enable debug logging |
+| `--quiet` / `-q` | All | Only show warnings and errors |
+| `--output` / `-o` | generate, preview | Custom output file path |
+| `--dry-run` | generate, preview | Run script + voiceover, skip FFmpeg assembly |
+| `--no-api` | batch | Use plan text directly (no Claude API) |
+| `--project-root` | generate, preview, batch | Override project root path |
 
 ## How It Works
 
@@ -62,20 +76,42 @@ include_captions: true
 include_logo: true
 ```
 
+## Configuration
+
+All settings are in `config.yaml`:
+
+- **`ai.model`** — Claude model for script generation (default: `claude-sonnet-4-20250514`)
+- **`video.*`** — Resolution, FPS, codec settings
+- **`branding.*`** — Logo, colors, positioning
+- **`captions.*`** — Font, style, caption appearance
+- **`voiceover.*`** — TTS provider, voice, speed
+- **`music.*`** — Volume, fade settings
+- **`output.*`** — Output directory, file size limits
+
 ## Project Structure
 
 ```
-src/
-├── cli.py           # CLI commands
+auto_video_agent/
+├── cli.py           # CLI commands and pipeline orchestration
 ├── planner.py       # YAML plan parser & validator
-├── scriptwriter.py  # Claude API script generation
+├── scriptwriter.py  # Claude API script generation (with retry)
 ├── voiceover.py     # Edge TTS with word timestamps
 ├── captions.py      # Styled caption rendering (Pillow)
 ├── compositor.py    # FFmpeg video assembly
 ├── assets.py        # Clip validation & scaling
 ├── music.py         # Background music generation
 ├── branding.py      # Logo, intro, and outro cards
-└── exporter.py      # Output validation
+├── exporter.py      # Output validation
+└── utils.py         # Shared helpers (colors, fonts, config)
+
+assets/
+├── clips/           # Your video clips (optional)
+├── music/           # Custom background tracks (optional)
+├── logo/            # Your shop logo
+└── fonts/           # Custom fonts
+
+templates/           # Video plan YAML files
+tests/               # Test suite
 ```
 
 ## Requirements
@@ -83,6 +119,19 @@ src/
 - Python 3.11+
 - FFmpeg
 - Anthropic API key (optional for preview mode)
+
+## Development
+
+```bash
+# Install with dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest -v
+
+# Run with debug logging
+auto-video-agent -v generate templates/brake_shaking.yaml
+```
 
 ## Use Case
 

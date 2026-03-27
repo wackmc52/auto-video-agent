@@ -5,15 +5,15 @@ Takes a Script and produces an audio file plus word-level timestamps
 for caption synchronization.
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import edge_tts
-import yaml
 
 from .scriptwriter import Script
 
+logger = logging.getLogger(__name__)
 
 TICKS_PER_SECOND = 10_000_000  # Edge TTS uses 100-nanosecond ticks
 
@@ -43,6 +43,8 @@ def generate_voiceover(
     """Generate voiceover audio from a script with word-level timestamps."""
     # Combine all script lines into one text block
     full_text = " ".join(line.text for line in script.lines)
+
+    logger.debug(f"Generating voiceover: voice={voice}, rate={rate}, text_len={len(full_text)}")
 
     # Generate audio with word boundary metadata
     comm = edge_tts.Communicate(
@@ -82,6 +84,10 @@ def generate_voiceover(
 
     file_size_kb = len(audio_data) / 1024
 
+    logger.info(f"Audio saved ({round(total_duration, 1)}s, {round(file_size_kb, 1)}KB)")
+    logger.info(f"  Path: {output_path}")
+    logger.info(f"  Words tracked: {len(word_timings)}")
+
     return VoiceoverResult(
         audio_path=output_path,
         duration=round(total_duration, 1),
@@ -90,25 +96,12 @@ def generate_voiceover(
     )
 
 
-def load_voice_config(config_path: str = "config.yaml") -> tuple[str, str]:
-    """Load voice and speed settings from config."""
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-        vo = config.get("voiceover", {})
-        voice = vo.get("edge_voice", "en-US-GuyNeural")
-        speed = vo.get("speed", 1.0)
-        # Convert speed multiplier to edge-tts rate format
-        rate_pct = int((speed - 1.0) * 100)
-        rate = f"{rate_pct:+d}%"
-        return voice, rate
-    except FileNotFoundError:
-        return "en-US-GuyNeural", "+0%"
-
-
-def print_voiceover_summary(result: VoiceoverResult) -> None:
-    """Print a summary of the generated voiceover."""
-    print(f"\n  Audio saved ({result.duration}s, {result.file_size_kb}KB)")
-    print(f"   Path: {result.audio_path}")
-    print(f"   Words tracked: {len(result.word_timings)}")
-    print()
+def load_voice_config(config: dict) -> tuple[str, str]:
+    """Load voice and speed settings from parsed config dict."""
+    vo = config.get("voiceover", {})
+    voice = vo.get("edge_voice", "en-US-GuyNeural")
+    speed = vo.get("speed", 1.0)
+    # Convert speed multiplier to edge-tts rate format
+    rate_pct = int((speed - 1.0) * 100)
+    rate = f"{rate_pct:+d}%"
+    return voice, rate

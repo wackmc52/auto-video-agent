@@ -2,19 +2,20 @@
 captions.py — Generates timed caption segments from word-level timestamps.
 
 Groups words into short caption frames (2-4 words) with precise timing.
-Supports two rendering modes:
-  - "drawtext": FFmpeg native text overlay (fast, basic styling)
-  - "image": Pillow-rendered PNG overlays (rich styling, highlight effect)
+Supports rendering as styled PNG overlays via Pillow.
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-import yaml
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
+from .utils import hex_to_rgb, load_font
 from .voiceover import WordTiming
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +83,10 @@ def generate_captions(
 
         i += words_per_frame
 
+    logger.info(f"Captions generated ({len(frames)} frames)")
+    if frames:
+        logger.info(f"  Time span: {frames[0].start}s - {frames[-1].end}s")
+
     return CaptionTrack(frames=frames)
 
 
@@ -99,7 +104,7 @@ def render_caption_images(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    font = _load_font(style.font_path, style.font_size)
+    font = load_font(style.font_path, style.font_size)
 
     for i, frame in enumerate(track.frames):
         img_path = os.path.join(output_dir, f"caption_{i:04d}.png")
@@ -115,18 +120,16 @@ def render_caption_images(
         frame.image_path = img_path
 
     track.style = style.style
+    logger.debug(f"Rendered {len(track.frames)} caption images to {output_dir}")
     return track
 
 
 def _render_highlight_frame(
     frame: CaptionFrame,
-    font: ImageFont.FreeTypeFont,
+    font,
     style: CaptionStyle,
 ) -> Image.Image:
-    """Render a caption with a rounded background pill and white text.
-
-    The text sits on a semi-transparent dark pill, centered on the canvas.
-    """
+    """Render a caption with a rounded background pill and white text."""
     canvas = Image.new("RGBA", (style.canvas_width, style.canvas_height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
@@ -145,10 +148,9 @@ def _render_highlight_frame(
     pill_y = int(style.canvas_height * style.y_position) - pill_h // 2
 
     # Draw rounded rectangle background
-    bg_r, bg_g, bg_b = _hex_to_rgb(style.bg_color)
-    _draw_rounded_rect(
-        draw,
-        (pill_x, pill_y, pill_x + pill_w, pill_y + pill_h),
+    bg_r, bg_g, bg_b = hex_to_rgb(style.bg_color)
+    draw.rounded_rectangle(
+        [pill_x, pill_y, pill_x + pill_w, pill_y + pill_h],
         radius=style.border_radius,
         fill=(bg_r, bg_g, bg_b, style.bg_opacity),
     )
@@ -157,11 +159,10 @@ def _render_highlight_frame(
     text_x = pill_x + pad
     text_y = pill_y + pad
 
-    # Stroke/outline
-    stroke_r, stroke_g, stroke_b = _hex_to_rgb(style.stroke_color)
+    stroke_r, stroke_g, stroke_b = hex_to_rgb(style.stroke_color)
     draw.text(
         (text_x, text_y), text, font=font,
-        fill=_hex_to_rgb(style.text_color),
+        fill=hex_to_rgb(style.text_color),
         stroke_width=style.stroke_width,
         stroke_fill=(stroke_r, stroke_g, stroke_b),
     )
@@ -171,7 +172,7 @@ def _render_highlight_frame(
 
 def _render_pop_frame(
     frame: CaptionFrame,
-    font: ImageFont.FreeTypeFont,
+    font,
     style: CaptionStyle,
 ) -> Image.Image:
     """Render a 'pop' style caption — large bold text with a colored shadow, no pill."""
@@ -189,7 +190,7 @@ def _render_pop_frame(
 
     # Shadow offset
     shadow_offset = 4
-    shadow_color = _hex_to_rgb(style.highlight_color)
+    shadow_color = hex_to_rgb(style.highlight_color)
     draw.text(
         (text_x + shadow_offset, text_y + shadow_offset), text, font=font,
         fill=shadow_color,
@@ -198,10 +199,10 @@ def _render_pop_frame(
     )
 
     # Main text
-    stroke_rgb = _hex_to_rgb(style.stroke_color)
+    stroke_rgb = hex_to_rgb(style.stroke_color)
     draw.text(
         (text_x, text_y), text, font=font,
-        fill=_hex_to_rgb(style.text_color),
+        fill=hex_to_rgb(style.text_color),
         stroke_width=style.stroke_width,
         stroke_fill=stroke_rgb,
     )
@@ -211,7 +212,7 @@ def _render_pop_frame(
 
 def _render_simple_frame(
     frame: CaptionFrame,
-    font: ImageFont.FreeTypeFont,
+    font,
     style: CaptionStyle,
 ) -> Image.Image:
     """Render plain white text with black stroke — no background."""
@@ -227,10 +228,10 @@ def _render_simple_frame(
     text_x = (style.canvas_width - text_w) // 2
     text_y = int(style.canvas_height * style.y_position) - text_h // 2
 
-    stroke_rgb = _hex_to_rgb(style.stroke_color)
+    stroke_rgb = hex_to_rgb(style.stroke_color)
     draw.text(
         (text_x, text_y), text, font=font,
-        fill=_hex_to_rgb(style.text_color),
+        fill=hex_to_rgb(style.text_color),
         stroke_width=style.stroke_width,
         stroke_fill=stroke_rgb,
     )
@@ -238,85 +239,18 @@ def _render_simple_frame(
     return canvas
 
 
-def caption_images_to_ffmpeg_overlay(track: CaptionTrack) -> str:
-    """Build FFmpeg filter to overlay caption PNGs at their timed intervals.
-
-    Each caption image is added as an input and overlaid with enable='between(t,start,end)'.
-    Returns a tuple of (extra_inputs, filter_string) to be added to the FFmpeg command.
-    """
-    # This is handled directly in compositor.py since it needs to manage inputs
-    pass
-
-
-def load_caption_config(config_path: str = "config.yaml") -> CaptionStyle:
-    """Load caption styling from config file."""
+def load_caption_config(config: dict) -> CaptionStyle:
+    """Load caption styling from parsed config dict."""
     style = CaptionStyle()
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-        cap = config.get("captions", {})
-        style.font_path = cap.get("font_path", style.font_path)
-        style.font_size = cap.get("font_size", style.font_size)
-        style.text_color = cap.get("font_color", style.text_color)
-        style.stroke_color = cap.get("stroke_color", style.stroke_color)
-        style.stroke_width = cap.get("stroke_width", style.stroke_width)
-        style.style = cap.get("style", style.style)
+    cap = config.get("captions", {})
+    style.font_path = cap.get("font_path", style.font_path)
+    style.font_size = cap.get("font_size", style.font_size)
+    style.text_color = cap.get("font_color", style.text_color)
+    style.stroke_color = cap.get("stroke_color", style.stroke_color)
+    style.stroke_width = cap.get("stroke_width", style.stroke_width)
+    style.style = cap.get("style", style.style)
 
-        # If font_path doesn't exist, fallback to system font
-        if not os.path.exists(style.font_path):
-            style.font_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-    except FileNotFoundError:
-        pass
+    # If font_path doesn't exist, fallback to system font
+    if not os.path.exists(style.font_path):
+        style.font_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
     return style
-
-
-def _load_font(font_path: str, size: int) -> ImageFont.FreeTypeFont:
-    """Load a TrueType font, falling back to default if not found."""
-    try:
-        return ImageFont.truetype(font_path, size)
-    except (OSError, IOError):
-        # Fallback to system font
-        for fallback in [
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ]:
-            try:
-                return ImageFont.truetype(fallback, size)
-            except (OSError, IOError):
-                continue
-        return ImageFont.load_default()
-
-
-def _draw_rounded_rect(
-    draw: ImageDraw.ImageDraw,
-    bbox: tuple,
-    radius: int,
-    fill: tuple,
-) -> None:
-    """Draw a rounded rectangle on a PIL ImageDraw."""
-    x1, y1, x2, y2 = bbox
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=fill)
-
-
-def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    """Convert hex color to RGB tuple."""
-    hex_color = hex_color.lstrip("#")
-    return (
-        int(hex_color[0:2], 16),
-        int(hex_color[2:4], 16),
-        int(hex_color[4:6], 16),
-    )
-
-
-def print_captions_summary(track: CaptionTrack) -> None:
-    """Print a summary of the generated captions."""
-    has_images = any(f.image_path for f in track.frames)
-    mode = f"styled ({track.style})" if has_images else "timed"
-    print(f"\n  Captions generated ({track.count} frames, {mode})")
-    if track.frames:
-        print(f"   Time span: {track.frames[0].start}s - {track.frames[-1].end}s")
-        for frame in track.frames[:5]:
-            print(f"    [{frame.start:.1f}s - {frame.end:.1f}s] \"{frame.text}\"")
-        if track.count > 5:
-            print(f"    ... and {track.count - 5} more")
-    print()

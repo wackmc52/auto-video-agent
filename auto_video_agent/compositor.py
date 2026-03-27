@@ -5,19 +5,25 @@ Stitches together background/clips, voiceover audio, styled caption overlays,
 background music (ducked), logo watermark, and intro/outro into a final 9:16 MP4.
 """
 
+import json
+import logging
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
 from .assets import (
     ClipInfo, TARGET_WIDTH, TARGET_HEIGHT,
     generate_gradient_background, scale_crop_filter,
+    hdr_to_sdr_filter,
 )
-from .captions import CaptionTrack, CaptionStyle, render_caption_images, load_caption_config
+from .captions import CaptionTrack, CaptionStyle, render_caption_images
 from .voiceover import VoiceoverResult
 from .music import get_music_track
 from .branding import generate_intro, generate_outro, generate_placeholder_logo
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -75,114 +81,116 @@ def compose_video(
     """
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     duration = voiceover.duration
-    temp_dir = os.path.join(os.path.dirname(output_path) or ".", "_temp")
-    os.makedirs(temp_dir, exist_ok=True)
 
-    # --- Step 1: Base video ---
-    if clips:
-        base_video = _sequence_clips(clips, duration, temp_dir, config)
-    else:
-        base_video = generate_gradient_background(
-            os.path.join(temp_dir, "background.mp4"),
-            duration=duration,
-            color_top=config.bg_color_top,
-            color_bottom=config.bg_color_bottom,
-            width=config.width,
-            height=config.height,
-            fps=config.fps,
+    with tempfile.TemporaryDirectory(prefix="auto_video_") as temp_dir:
+        # --- Step 1: Base video ---
+        logger.info("Step 1/6: Preparing base video")
+        if clips:
+            base_video = _sequence_clips(clips, duration, temp_dir, config)
+        else:
+            base_video = generate_gradient_background(
+                os.path.join(temp_dir, "background.mp4"),
+                duration=duration,
+                color_top=config.bg_color_top,
+                color_bottom=config.bg_color_bottom,
+                width=config.width,
+                height=config.height,
+                fps=config.fps,
+            )
+
+        # --- Step 2: Render and overlay styled captions ---
+        logger.info("Step 2/6: Rendering captions")
+        if caption_track and caption_track.count > 0:
+            caption_dir = os.path.join(temp_dir, "captions")
+            style = CaptionStyle(
+                font_path=config.font_path,
+                font_size=config.font_size,
+                text_color=config.font_color,
+                stroke_color=config.stroke_color,
+                stroke_width=config.stroke_width,
+                canvas_width=config.width,
+                canvas_height=config.height,
+                style=config.caption_style,
+                highlight_color=config.accent_color,
+            )
+            render_caption_images(caption_track, caption_dir, style)
+            captioned_video = _overlay_caption_images(
+                base_video, caption_track, temp_dir, config
+            )
+        else:
+            captioned_video = base_video
+
+        # --- Step 3: Add logo watermark ---
+        logger.info("Step 3/6: Adding logo watermark")
+        logo_path = config.logo_path
+        if not logo_path or not os.path.exists(logo_path):
+            logo_path = os.path.join(temp_dir, "logo.png")
+            generate_placeholder_logo(logo_path, text="AUTO", size=300)
+
+        logoed_video = _add_logo_overlay(
+            captioned_video, logo_path, temp_dir, config
         )
 
-    # --- Step 2: Render and overlay styled captions ---
-    if caption_track and caption_track.count > 0:
-        caption_dir = os.path.join(temp_dir, "captions")
-        style = CaptionStyle(
-            font_path=config.font_path,
-            font_size=config.font_size,
-            text_color=config.font_color,
-            stroke_color=config.stroke_color,
-            stroke_width=config.stroke_width,
-            canvas_width=config.width,
-            canvas_height=config.height,
-            style=config.caption_style,
-            highlight_color=config.accent_color,
-        )
-        render_caption_images(caption_track, caption_dir, style)
-        captioned_video = _overlay_caption_images(
-            base_video, caption_track, temp_dir, config
-        )
-    else:
-        captioned_video = base_video
+        # --- Step 4: Mix audio (voiceover + music) ---
+        logger.info("Step 4/6: Mixing audio")
+        music_path = None
+        if music_mood != "none":
+            music_path = get_music_track(music_mood, duration + 5, temp_dir)
 
-    # --- Step 3: Add logo watermark ---
-    logo_path = config.logo_path
-    if not logo_path or not os.path.exists(logo_path):
-        # Generate placeholder logo
-        logo_path = os.path.join(temp_dir, "logo.png")
-        generate_placeholder_logo(logo_path, text="AUTO", size=300)
-
-    logoed_video = _add_logo_overlay(
-        captioned_video, logo_path, temp_dir, config
-    )
-
-    # --- Step 4: Mix audio (voiceover + music) ---
-    music_path = None
-    if music_mood != "none":
-        music_path = get_music_track(music_mood, duration + 5, temp_dir)
-
-    main_video = _mix_audio(
-        logoed_video, voiceover.audio_path, music_path,
-        duration, temp_dir, config
-    )
-
-    # --- Step 5: Prepend intro / append outro ---
-    segments = []
-
-    if config.include_intro and video_title:
-        intro_path = os.path.join(temp_dir, "intro.mp4")
-        generate_intro(
-            intro_path,
-            title=video_title,
-            duration=config.intro_duration,
-            logo_path=logo_path,
-            bg_color_top=config.bg_color_top,
-            bg_color_bottom=config.bg_color_bottom,
-            accent_color=config.accent_color,
-            width=config.width,
-            height=config.height,
-            fps=config.fps,
-        )
-        segments.append(intro_path)
-
-    segments.append(main_video)
-
-    if config.include_outro and cta_text:
-        outro_path = os.path.join(temp_dir, "outro.mp4")
-        generate_outro(
-            outro_path,
-            cta_text=cta_text,
-            duration=config.outro_duration,
-            logo_path=logo_path,
-            bg_color_top=config.bg_color_top,
-            bg_color_bottom=config.bg_color_bottom,
-            accent_color=config.accent_color,
-            width=config.width,
-            height=config.height,
-            fps=config.fps,
-        )
-        segments.append(outro_path)
-
-    if len(segments) > 1:
-        _concat_segments(segments, output_path, config)
-    else:
-        # Just copy the main video
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", main_video, "-c", "copy", output_path],
-            capture_output=True, timeout=30,
+        main_video = _mix_audio(
+            logoed_video, voiceover.audio_path, music_path,
+            duration, temp_dir, config
         )
 
-    # Cleanup
-    _cleanup_temp(temp_dir)
+        # --- Step 5: Prepend intro / append outro ---
+        logger.info("Step 5/6: Adding intro/outro")
+        segments = []
 
+        if config.include_intro and video_title:
+            intro_path = os.path.join(temp_dir, "intro.mp4")
+            generate_intro(
+                intro_path,
+                title=video_title,
+                duration=config.intro_duration,
+                logo_path=logo_path,
+                bg_color_top=config.bg_color_top,
+                bg_color_bottom=config.bg_color_bottom,
+                accent_color=config.accent_color,
+                width=config.width,
+                height=config.height,
+                fps=config.fps,
+            )
+            segments.append(intro_path)
+
+        segments.append(main_video)
+
+        if config.include_outro and cta_text:
+            outro_path = os.path.join(temp_dir, "outro.mp4")
+            generate_outro(
+                outro_path,
+                cta_text=cta_text,
+                duration=config.outro_duration,
+                logo_path=logo_path,
+                bg_color_top=config.bg_color_top,
+                bg_color_bottom=config.bg_color_bottom,
+                accent_color=config.accent_color,
+                width=config.width,
+                height=config.height,
+                fps=config.fps,
+            )
+            segments.append(outro_path)
+
+        # --- Step 6: Final render ---
+        logger.info("Step 6/6: Final render")
+        if len(segments) > 1:
+            _concat_segments(segments, output_path, config)
+        else:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", main_video, "-c", "copy", output_path],
+                capture_output=True, timeout=30,
+            )
+
+    # temp_dir auto-cleaned by context manager
     return output_path
 
 
@@ -201,13 +209,16 @@ def _sequence_clips(
         if clip.needs_scaling:
             vf = scale_crop_filter(clip)
         else:
-            vf = (
+            # Already correct resolution — still need HDR tone mapping if applicable
+            tonemap = hdr_to_sdr_filter(clip)
+            base_filter = (
                 f"scale={config.width}:{config.height}"
                 f":force_original_aspect_ratio=decrease,"
                 f"pad={config.width}:{config.height}:(ow-iw)/2:(oh-ih)/2:color=black"
             )
+            vf = f"{tonemap},{base_filter}" if tonemap else base_filter
 
-        subprocess.run(
+        result = subprocess.run(
             [
                 "ffmpeg", "-y", "-i", clip.path,
                 "-vf", vf,
@@ -215,12 +226,15 @@ def _sequence_clips(
                 "-pix_fmt", "yuv420p", "-an",
                 scaled_path,
             ],
-            capture_output=True, timeout=60,
+            capture_output=True, text=True, timeout=60,
         )
-        if os.path.exists(scaled_path):
+        if result.returncode != 0:
+            logger.warning(f"Failed to scale clip {clip.path}: {result.stderr[-200:]}")
+        elif os.path.exists(scaled_path):
             scaled_paths.append(scaled_path)
 
     if not scaled_paths:
+        logger.warning("No clips could be processed, using gradient background")
         return generate_gradient_background(
             os.path.join(temp_dir, "background.mp4"),
             duration=target_duration,
@@ -256,10 +270,8 @@ def _overlay_caption_images(
     """Overlay rendered caption PNG images onto the video at their timed intervals."""
     output = os.path.join(temp_dir, "captioned.mp4")
 
-    # Build FFmpeg command with caption images as inputs
     cmd = ["ffmpeg", "-y", "-i", video_path]
 
-    # Add each caption image as input
     for frame in track.frames:
         if frame.image_path and os.path.exists(frame.image_path):
             cmd += ["-i", frame.image_path]
@@ -297,7 +309,7 @@ def _overlay_caption_images(
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
     if result.returncode != 0:
-        # Fallback: return video without captions
+        logger.warning(f"Caption overlay failed, continuing without captions: {result.stderr[-200:]}")
         return video_path
 
     return output
@@ -342,6 +354,7 @@ def _add_logo_overlay(
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
     if result.returncode != 0:
+        logger.warning(f"Logo overlay failed: {result.stderr[-200:]}")
         return video_path
 
     return output
@@ -359,7 +372,6 @@ def _mix_audio(
     output = os.path.join(temp_dir, "with_audio.mp4")
 
     if music_path and os.path.exists(music_path):
-        # Mix voiceover + music with ducking
         vol = config.music_volume
         fade_out = config.music_fade_out
         fade_start = max(0, duration - fade_out)
@@ -382,7 +394,6 @@ def _mix_audio(
             output,
         ]
     else:
-        # Voiceover only
         cmd = [
             "ffmpeg", "-y",
             "-i", video_path,
@@ -421,11 +432,15 @@ def _concat_segments(
             ["ffprobe", "-v", "quiet", "-show_streams", "-print_format", "json", seg],
             capture_output=True, text=True, timeout=10,
         )
-        import json as _json
-        has_audio = any(
-            s.get("codec_type") == "audio"
-            for s in _json.loads(probe.stdout).get("streams", [])
-        ) if probe.returncode == 0 else False
+        has_audio = False
+        if probe.returncode == 0:
+            try:
+                has_audio = any(
+                    s.get("codec_type") == "audio"
+                    for s in json.loads(probe.stdout).get("streams", [])
+                )
+            except json.JSONDecodeError:
+                pass
 
         # Build command — add silent audio if segment has none
         cmd = ["ffmpeg", "-y", "-i", seg]
@@ -443,10 +458,11 @@ def _concat_segments(
             norm_path,
         ]
 
-        subprocess.run(cmd, capture_output=True, timeout=60)
-        if os.path.exists(norm_path):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode == 0 and os.path.exists(norm_path):
             normalized.append(norm_path)
         else:
+            logger.warning(f"Failed to normalize segment {seg}: {result.stderr[-200:]}")
             normalized.append(seg)
 
     concat_path = os.path.join(temp_dir, "final_concat.txt")
@@ -466,57 +482,16 @@ def _concat_segments(
     )
 
 
-def _cleanup_temp(temp_dir: str) -> None:
-    """Remove temporary files and directories."""
-    if not os.path.exists(temp_dir):
-        return
-
-    # Remove caption subdirectory
-    caption_dir = os.path.join(temp_dir, "captions")
-    if os.path.exists(caption_dir):
-        for f in os.listdir(caption_dir):
-            try:
-                os.remove(os.path.join(caption_dir, f))
-            except OSError:
-                pass
-        try:
-            os.rmdir(caption_dir)
-        except OSError:
-            pass
-
-    # Remove temp files
-    for f in os.listdir(temp_dir):
-        fpath = os.path.join(temp_dir, f)
-        if os.path.isfile(fpath):
-            try:
-                os.remove(fpath)
-            except OSError:
-                pass
-
-    try:
-        os.rmdir(temp_dir)
-    except OSError:
-        pass
-
-
-def load_compositor_config(config_path: str = "config.yaml") -> CompositorConfig:
-    """Load compositor settings from the project config file."""
-    import yaml
-
+def load_compositor_config(config: dict) -> CompositorConfig:
+    """Load compositor settings from a parsed config dict."""
     cfg = CompositorConfig()
 
-    try:
-        with open(config_path, "r") as f:
-            raw = yaml.safe_load(f)
-    except FileNotFoundError:
-        return cfg
-
-    video = raw.get("video", {})
+    video = config.get("video", {})
     cfg.width = video.get("width", cfg.width)
     cfg.height = video.get("height", cfg.height)
     cfg.fps = video.get("fps", cfg.fps)
 
-    captions = raw.get("captions", {})
+    captions = config.get("captions", {})
     cfg.font_path = captions.get("font_path", cfg.font_path)
     cfg.font_size = captions.get("font_size", cfg.font_size)
     cfg.font_color = captions.get("font_color", cfg.font_color)
@@ -524,14 +499,14 @@ def load_compositor_config(config_path: str = "config.yaml") -> CompositorConfig
     cfg.stroke_width = captions.get("stroke_width", cfg.stroke_width)
     cfg.caption_style = captions.get("style", cfg.caption_style)
 
-    branding = raw.get("branding", {})
+    branding = config.get("branding", {})
     cfg.logo_path = branding.get("logo_path", cfg.logo_path)
     cfg.logo_size = branding.get("logo_size", cfg.logo_size)
     cfg.logo_position = branding.get("logo_position", cfg.logo_position)
     cfg.bg_color_top = branding.get("secondary_color", cfg.bg_color_top)
     cfg.accent_color = branding.get("primary_color", cfg.accent_color)
 
-    music = raw.get("music", {})
+    music = config.get("music", {})
     cfg.music_volume = music.get("volume", cfg.music_volume)
     cfg.music_fade_out = music.get("fade_out", cfg.music_fade_out)
 
